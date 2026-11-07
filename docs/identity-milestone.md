@@ -183,11 +183,11 @@ cd backend
 .venv/Scripts/ruff check .
 ```
 
-Results: migrations generated without errors; Django system check clean; 33 tests passed; Ruff clean.
+Results: migrations generated without errors; Django system check clean; 39 tests passed; Ruff clean.
 
 Tests cover successful login, generic authentication failure, disabled accounts, membership
 filtering, refresh rotation/blacklisting, logout ownership, password-change revocation, weak-password
-rejection, health checks, platform-admin bootstrap, cross-tenant read/write/member/audit denial,
-object-level membership isolation, role escalation denial, immediate deactivation, last-admin
-protection, atomic institution creation, duplicate records, suspension, invalid timezones, audit
-scope, and request correlation.
+rejection, health checks, platform-admin bootstrap, production fail-closed settings, cross-tenant
+read/write/member/audit denial, object-level membership isolation, role escalation denial, immediate
+deactivation, last-admin protection, atomic institution creation, duplicate records, suspension,
+invalid timezones, audit scope, and request correlation.

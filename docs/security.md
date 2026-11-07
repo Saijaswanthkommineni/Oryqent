@@ -40,6 +40,10 @@ The duplicate enforcement is intentional defense in depth.
 ## Data protection
 
 - Production refuses to start without an explicit secret, PostgreSQL, Redis, and allowed hosts.
+- Production rejects placeholder or undersized secrets, template database passwords, wildcard hosts,
+  and wildcard CORS/CSRF origins.
+- Gunicorn trusts forwarded headers only from `127.0.0.1` by default; Compose explicitly trusts only
+  its internal Nginx service, and other deployments must configure the proxy IP/CIDR.
 - Secrets are read from environment variables and are never committed.
 - Passwords are never written to logs or audit metadata.
 - Audit logs record sensitive administrative actions with actor, tenant, target, request ID, and

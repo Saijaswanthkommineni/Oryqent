@@ -9,6 +9,6 @@ keepalive = 5
 accesslog = "-"
 errorlog = "-"
 loglevel = os.getenv("GUNICORN_LOG_LEVEL", "info")
-# The backend port is not published by Compose. In another topology, restrict this
-# to the trusted reverse-proxy network instead.
-forwarded_allow_ips = os.getenv("GUNICORN_FORWARDED_ALLOW_IPS", "*")
+# Trust only a local proxy by default. The local Compose profile explicitly trusts
+# its internal Nginx service; other deployments must set the proxy IP/CIDR.
+forwarded_allow_ips = os.getenv("GUNICORN_FORWARDED_ALLOW_IPS", "127.0.0.1")

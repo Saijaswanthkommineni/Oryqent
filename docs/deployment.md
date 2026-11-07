@@ -36,9 +36,15 @@ Use `config.settings.production`. Startup fails unless:
 
 The application also needs:
 
+- A random `DJANGO_SECRET_KEY` of at least 50 characters. Placeholder values are rejected.
+- A real `POSTGRES_PASSWORD`; template values are rejected.
+- Explicit allowed hosts with no wildcard entry.
 - TLS termination at a trusted reverse proxy or load balancer.
 - Forwarding headers set by that trusted proxy; clients must not be able to spoof them.
-- `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` set to the deployed web origins.
+- `GUNICORN_FORWARDED_ALLOW_IPS` set to the exact proxy IP/CIDR. Gunicorn trusts only
+  `127.0.0.1` by default; local Compose opts in to its internal Nginx service explicitly.
+- `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` set to the deployed web origins, without a
+  wildcard entry.
 - Secrets injected by the platform's secret manager, not baked into images.
 - A release job running `python manage.py migrate --noinput`.
 - `python manage.py collectstatic --noinput` with Nginx or an object store serving `/static/`.
