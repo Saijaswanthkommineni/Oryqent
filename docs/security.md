@@ -37,6 +37,26 @@ The duplicate enforcement is intentional defense in depth.
 - Deactivated memberships deny tenant access immediately, even while an unexpired access token
   remains cryptographically valid.
 
+## Security regression coverage
+
+The test suite exercises each boundary as a negative case:
+
+- Invalid credentials: wrong password, unknown account, inactive account, and malformed token.
+- Unauthorized endpoints: every protected authentication and tenant route returns 401 without a
+  valid token.
+- Expired authentication: expired access and refresh tokens are rejected with 401.
+- Cross-institution access: reads, writes, member management, audit access, and membership UUIDs
+  from another tenant are denied.
+- Role escalation: teachers and students cannot self-promote or manage members; institution
+  administrators cannot create, promote, or modify administrators; injected platform flags are
+  ignored.
+- Direct object access: membership updates filter by both the membership UUID and the institution
+  UUID from the route.
+- Duplicate memberships: the database unique constraint blocks a second membership for the same
+  user and institution, and duplicate account emails are rejected case-insensitively.
+- Frontend-supplied institution IDs: the URL institution UUID is resolved against server-side
+  membership; conflicting query parameters, headers, JSON fields, and JWT claims are ignored.
+
 ## Data protection
 
 - Production refuses to start without an explicit secret, PostgreSQL, Redis, and allowed hosts.

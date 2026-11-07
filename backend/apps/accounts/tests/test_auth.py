@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from io import StringIO
 from unittest.mock import patch
 
@@ -6,8 +7,10 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from apps.accounts.models import User
 from apps.institutions.models import Institution, InstitutionMembership
@@ -166,6 +169,53 @@ class AuthenticationAPITests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+    def test_expired_access_token_is_rejected(self):
+        token = AccessToken.for_user(self.user)
+        token["auth_version"] = self.user.auth_version
+        token.set_exp(
+            from_time=timezone.now() - timedelta(minutes=30),
+            lifetime=timedelta(minutes=15),
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        response = self.client.get(reverse("auth-me"))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(response.data["error"]["code"], "token_not_valid")
+
+    def test_expired_refresh_token_is_rejected(self):
+        token = RefreshToken.for_user(self.user)
+        token["auth_version"] = self.user.auth_version
+        token.set_exp(
+            from_time=timezone.now() - timedelta(days=8),
+            lifetime=timedelta(days=7),
+        )
+
+        response = self.client.post(
+            reverse("auth-refresh"),
+            {"refresh": str(token)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_protected_auth_endpoints_reject_unauthenticated_requests(self):
+        requests = [
+            ("get", reverse("auth-me"), None),
+            ("patch", reverse("auth-me"), {"full_name": "Injected Name"}),
+            (
+                "post",
+                reverse("auth-password-change"),
+                {
+                    "current_password": INITIAL_PASSWORD,
+                    "new_password": NEW_PASSWORD,
+                },
+            ),
+            ("post", reverse("auth-logout"), {"refresh": "not-a-token"}),
+        ]
+        for method, url, data in requests:
+            with self.subTest(method=method, url=url):
+                response = getattr(self.client, method)(url, data, format="json")
+                self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
     def test_me_requires_authentication_and_returns_memberships(self):
         unauthenticated = self.client.get(reverse("auth-me"))
         self.assertEqual(unauthenticated.status_code, status.HTTP_401_UNAUTHORIZED)
@@ -180,13 +230,32 @@ class AuthenticationAPITests(APITestCase):
         self.login()
         response = self.client.patch(
             reverse("auth-me"),
-            {"full_name": "Updated Name", "email": "attacker@example.com"},
+            {
+                "full_name": "Updated Name",
+                "email": "attacker@example.com",
+                "is_platform_admin": True,
+            },
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.user.refresh_from_db()
         self.assertEqual(self.user.full_name, "Updated Name")
         self.assertEqual(self.user.email, "student@example.com")
+        self.assertFalse(self.user.is_platform_admin)
+
+    def test_deactivated_account_token_is_rejected_immediately(self):
+        self.login()
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        response = self.client.get(reverse("auth-me"))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_malformed_access_token_is_rejected(self):
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer not-a-jwt")
+        response = self.client.get(reverse("auth-me"))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(response.data["error"]["code"], "token_not_valid")
 
     def test_refresh_rotates_and_blacklists_the_old_token(self):
         login = self.login()

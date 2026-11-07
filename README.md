@@ -22,8 +22,8 @@ question-bank, web-client, and Flutter modules are **not implemented yet** and a
 - Immutable audit events for administrative institution and membership changes.
 - Structured JSON logs, request correlation, scoped throttling, health checks, and production
   security settings.
-- 39 automated tests covering authentication, authorization, tenant isolation, audit behavior,
-  bootstrap command behavior, production fail-closed settings, and negative failure paths.
+- 52 automated tests covering authentication, authorization, tenant isolation, audit behavior,
+  bootstrap command behavior, production fail-closed settings, and security boundary failures.
 
 ## Local development
 

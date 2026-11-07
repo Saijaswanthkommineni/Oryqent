@@ -183,7 +183,7 @@ cd backend
 .venv/Scripts/ruff check .
 ```
 
-Results: migrations generated without errors; Django system check clean; 39 tests passed; Ruff clean.
+Results: migrations generated without errors; Django system check clean; 52 tests passed; Ruff clean.
 
 Tests cover successful login, generic authentication failure, disabled accounts, membership
 filtering, refresh rotation/blacklisting, logout ownership, password-change revocation, weak-password

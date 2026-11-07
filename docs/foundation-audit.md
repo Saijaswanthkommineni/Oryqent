@@ -37,7 +37,7 @@ feature work and could not be verified against nonexistent frontend requirements
 | Check | Result |
 | --- | --- |
 | `python manage.py check` | Passed, no issues |
-| `python manage.py test --settings=config.settings.test` | **39 tests passed** |
+| `python manage.py test --settings=config.settings.test` | **52 tests passed** |
 | `python manage.py makemigrations --check --dry-run` | No changes detected |
 | `python -m pip check` | No broken requirements |
 | `python -m compileall -q apps config` | Passed |
@@ -84,8 +84,9 @@ Production now rejects a bare `*` in `CORS_ALLOWED_ORIGINS` or `CSRF_TRUSTED_ORI
 explicitly trusts its internal Nginx service because the backend port is not published. Other
 deployments must set `GUNICORN_FORWARDED_ALLOW_IPS` to the trusted proxy address.
 
-Regression coverage was added in `backend/config/tests/test_production_settings.py`, increasing the
-suite from 33 to 39 tests.
+Regression coverage was added in `backend/config/tests/test_production_settings.py`. Security-boundary
+coverage was added in `backend/apps/institutions/tests/test_security_boundaries.py` and the
+authentication tests, increasing the suite from 33 to 52 tests.
 
 ## Checks not executable in this environment
 
