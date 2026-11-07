@@ -1,0 +1,34 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.sqlite3
+backend/.venv/
+backend/staticfiles/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node / web
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
