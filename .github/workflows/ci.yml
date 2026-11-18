@@ -1,0 +1,414 @@
+name: Release gates
+
+on:
+  pull_request:
+  push:
+    branches: [main, "remediation/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.14"
+  NODE_VERSION: "24"
+  FLUTTER_VERSION: "3.35.2"
+
+jobs:
+  backend:
+    name: Backend tests and static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - run: python -m pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: python -m ruff check .
+
+      - name: Migrations are committed
+        run: python manage.py makemigrations --check --dry-run --settings=config.settings.test
+
+      - name: Test suite
+        run: python manage.py test --settings=config.settings.test -v 2
+
+      - name: Generate disposable deploy-check secret
+        run: |
+          key="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
+          echo "::add-mask::$key"
+          echo "DJANGO_SECRET_KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Django deployment checks
+        env:
+          DJANGO_ALLOWED_HOSTS: example.com
+          DOMAIN: example.com
+          CSRF_TRUSTED_ORIGINS: https://example.com
+          ORYQENT_WEB_BASE_URL: https://example.com
+          DB_ENGINE: postgresql
+          POSTGRES_DB: oryqent
+          POSTGRES_USER: oryqent
+          POSTGRES_PASSWORD: ci-only-not-a-real-password
+          POSTGRES_HOST: 127.0.0.1
+          REDIS_URL: redis://127.0.0.1:6379/1
+        run: python manage.py check --deploy --settings=config.settings.production
+
+  backend-postgres:
+    name: Backend on PostgreSQL 17 (acceptance)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17.12-alpine
+        env:
+          POSTGRES_DB: oryqent_ci
+          POSTGRES_USER: oryqent_ci
+          POSTGRES_PASSWORD: ci-only-not-a-real-password
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oryqent_ci -d oryqent_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DB_ENGINE: postgresql
+      POSTGRES_DB: oryqent_ci
+      POSTGRES_USER: oryqent_ci
+      POSTGRES_PASSWORD: ci-only-not-a-real-password
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      DJANGO_SECRET_KEY: ci-only-not-a-real-secret-0123456789abcdefghijklmnopqrstuvwxyz
+      DJANGO_DEBUG: "false"
+      EVIDENCE_DIR: ${{ runner.temp }}/backend-postgres-evidence
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Create evidence directory
+        run: mkdir -p "$EVIDENCE_DIR"
+
+      - name: PostgreSQL readiness
+        run: |
+          set -o pipefail
+          for _ in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U oryqent_ci -d oryqent_ci; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "PostgreSQL did not become ready" >&2
+          exit 1
+        env:
+          PGPASSWORD: ci-only-not-a-real-password
+
+      - name: Install dependencies
+        run: |
+          set -o pipefail
+          python -m pip install -r requirements-dev.txt 2>&1 | tee "$EVIDENCE_DIR/01-dependencies.log"
+
+      - name: Apply migrations
+        run: |
+          set -o pipefail
+          python manage.py migrate --noinput --settings=config.settings.test 2>&1 | tee "$EVIDENCE_DIR/02-migrate.log"
+
+      - name: Migration consistency check
+        run: |
+          set -o pipefail
+          python manage.py makemigrations --check --dry-run --settings=config.settings.test 2>&1 | tee "$EVIDENCE_DIR/03-makemigrations-check.log"
+
+      - name: Ruff
+        run: |
+          set -o pipefail
+          python -m ruff check . 2>&1 | tee "$EVIDENCE_DIR/04-ruff.log"
+
+      - name: Django system checks
+        run: |
+          set -o pipefail
+          python manage.py check --settings=config.settings.test 2>&1 | tee "$EVIDENCE_DIR/05-system-check.log"
+
+      - name: PostgreSQL acceptance tests (exact 30, no skips allowed)
+        run: |
+          set -o pipefail
+          python manage.py test --settings=config.settings.test --noinput -v 2 \
+            apps.attempts.tests.test_attempt_engine.AttemptConcurrencyTestCase.test_concurrent_cancellation_and_submission_never_scores_a_cancelled_attempt \
+            apps.attempts.tests.test_attempt_engine.AttemptConcurrencyTestCase.test_concurrent_answer_saves_keep_the_newest_sequence \
+            apps.attempts.tests.test_attempt_engine.AttemptConcurrencyTestCase.test_sync_and_individual_save_serialize_without_lost_updates \
+            apps.attempts.tests.test_attempt_engine.AttemptConcurrencyTestCase.test_concurrent_starts_create_exactly_one_attempt \
+            apps.attempts.tests.test_attempt_engine.AttemptConcurrencyTestCase.test_concurrent_starts_cannot_exceed_the_attempt_limit \
+            apps.attempts.tests.test_attempt_engine.AttemptConcurrencyTestCase.test_concurrent_starts_for_different_students_do_not_serialize_or_deadlock \
+            apps.attempts.tests.test_attempt_engine.AttemptConcurrencyTestCase.test_concurrent_start_and_cancellation_leave_no_active_attempt \
+            apps.attempts.tests.test_attempt_engine.AttemptConcurrencyTestCase.test_cross_tenant_access_is_rejected_while_the_owner_submits \
+            apps.attempts.tests.test_scheduled_jobs.LeaseOwnershipTests.test_two_concurrent_workers_have_one_acquisition_winner \
+            apps.exams.tests.test_exam_management.ExamManagementAPITestCase.test_concurrent_exam_updates_preserve_a_valid_serialized_state \
+            apps.finance.tests.test_payment_integrity.PaymentConcurrencyTests.test_distinct_references_cannot_overdraw_the_assignment \
+            apps.finance.tests.test_refund_integrity.RefundPostgresConcurrencyTestCase.test_concurrent_same_key_with_different_payload_returns_one_conflict \
+            apps.finance.tests.test_refund_integrity.RefundPostgresConcurrencyTestCase.test_concurrent_full_and_partial_refunds_never_over_refund \
+            apps.finance.tests.test_refund_integrity.RefundPostgresConcurrencyTestCase.test_refund_on_another_payment_is_not_blocked_by_a_held_payment_lock \
+            apps.finance.tests.test_refund_integrity.RefundPostgresSchemaTestCase.test_tenant_scoped_key_checks_and_protect_foreign_key \
+            apps.identity.tests.test_delivery_admission.ConcurrentIdempotencyDatabaseTests.test_two_identical_requests_with_one_key_create_one_identity \
+            apps.identity.tests.test_phase_a1_replacement.PostgresReplacementConcurrencyTests.test_worker_and_operator_invitation_resend_leave_one_active_credential \
+            apps.identity.tests.test_phase_a1_replacement.PostgresReplacementConcurrencyTests.test_worker_and_operator_recovery_resend_leave_one_active_credential \
+            apps.identity.tests.test_phase_a1_replacement.PostgresReplacementConcurrencyTests.test_worker_otp_replacement_racing_with_verification_keeps_one_pending \
+            apps.identity.tests.test_phase_a1_replacement.PostgresReplacementConcurrencyTests.test_two_workers_claim_one_outbox_item \
+            apps.identity.tests.test_phase_a3_concurrency.PostgresPhaseA3ConcurrencyTests.test_request_racing_successful_verification_issues_no_code \
+            apps.identity.tests.test_phase_a3_concurrency.PostgresPhaseA3ConcurrencyTests.test_request_racing_worker_replacement_keeps_one_pending \
+            apps.identity.tests.test_phase_a3_concurrency.PostgresPhaseA3ConcurrencyTests.test_wrong_code_failure_racing_successful_verification \
+            apps.identity.tests.test_phase_a3_concurrency.PostgresPhaseA3ConcurrencyTests.test_wrong_code_failure_racing_worker_replacement \
+            apps.identity.tests.test_phase_a3_concurrency.PostgresPhaseA3ConcurrencyTests.test_two_concurrent_requests_issue_one_challenge \
+            apps.identity.tests.test_phase_a3_concurrency.PostgresPhaseA3ConcurrencyTests.test_request_and_verification_do_not_deadlock \
+            apps.identity.tests.test_phase_a5_cross_institution.PostgresCrossInstitutionConcurrencyTests.test_same_user_resends_in_two_institutions_do_not_deadlock \
+            apps.identity.tests.test_phase_a5_cross_institution.PostgresCrossInstitutionConcurrencyTests.test_public_otp_request_and_other_institution_resend_do_not_deadlock \
+            apps.identity.tests.test_provisioning.PostgresIdempotencyLookupTests.test_lookup_handles_a_record_with_no_related_identity \
+            apps.identity.tests.test_recovery.ConcurrentRecoveryCooldownTests.test_two_concurrent_requests_create_one_recovery_and_one_cooldown \
+            2>&1 | tee "$EVIDENCE_DIR/06-postgres-acceptance.log"
+          LOG="$EVIDENCE_DIR/06-postgres-acceptance.log"
+          grep -qx 'Found 30 test(s).' "$LOG" || { echo "::error::Expected 30 discovered tests" >&2; exit 1; }
+          grep -qx 'Ran 30 tests in .*' "$LOG" || { echo "::error::Expected 30 executed tests" >&2; exit 1; }
+          grep -q 'skipped=' "$LOG" && { echo "::error::PostgreSQL acceptance tests were skipped" >&2; exit 1; }
+          grep -qx 'OK' "$LOG" || { echo "::error::PostgreSQL acceptance tests did not report OK" >&2; exit 1; }
+
+      - name: Complete backend suite on PostgreSQL (no skips allowed)
+        run: |
+          set -o pipefail
+          python manage.py test --settings=config.settings.test --noinput -v 2 2>&1 | tee "$EVIDENCE_DIR/07-full-suite-postgres.log"
+          LOG="$EVIDENCE_DIR/07-full-suite-postgres.log"
+          grep -q 'skipped=' "$LOG" && { echo "::error::Backend suite on PostgreSQL reported skipped tests" >&2; exit 1; }
+          grep -qx 'OK' "$LOG" || { echo "::error::Backend suite on PostgreSQL did not report OK" >&2; exit 1; }
+
+      - name: Upload backend evidence logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-postgres-evidence
+          path: ${{ runner.temp }}/backend-postgres-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  web:
+    name: Web typecheck, lint, unit tests and production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      - name: TypeScript
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: /api/v1
+        run: npm run build
+
+  web-csp:
+    name: Production CSP (Chromium, Firefox, WebKit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      - name: Production build (same-origin API path)
+        env:
+          NEXT_PUBLIC_API_BASE_URL: /api/v1
+        run: npm run build
+
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Start production server
+        run: |
+          npm run start -- --port 3000 > /tmp/next-start.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/login > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/next-start.log
+          exit 1
+
+      - name: CSP suite
+        run: npx playwright test e2e/csp.spec.ts
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csp-playwright-report
+          path: apps/web/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
+
+  mobile:
+    name: Flutter analysis, tests and debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - run: flutter analyze
+
+      - run: flutter test
+
+      - name: Build debug APK
+        env:
+          API_BASE_URL: ${{ vars.ORYQENT_API_BASE_URL || 'https://api.example.invalid/api/v1' }}
+        run: >
+          flutter build apk --debug
+          --dart-define=ORYQENT_API_BASE_URL="$API_BASE_URL"
+
+      - name: Build release AAB (requires signing secrets)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          API_BASE_URL: ${{ vars.ORYQENT_API_BASE_URL || 'https://api.example.invalid/api/v1' }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::notice::Release signing secrets are not configured; skipping the signed AAB."
+            exit 0
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release.keystore"
+          flutter build appbundle --release \
+            --dart-define=ORYQENT_API_BASE_URL="$API_BASE_URL"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oryqent-debug-apk
+          path: apps/mobile/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  android-runtime:
+    name: Android runtime smoke (emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Build, install and launch on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          working-directory: apps/mobile
+          script: |
+            set -euo pipefail
+            flutter build apk --debug \
+              --dart-define=ORYQENT_API_BASE_URL="https://api.example.invalid/api/v1"
+            adb install -r build/app/outputs/flutter-apk/app-debug.apk
+            adb shell am start -W -n com.oryqent.oryqent_student/.MainActivity
+            sleep 10
+            adb shell pidof com.oryqent.oryqent_student
+            adb shell dumpsys activity activities | grep -E "mResumedActivity.*oryqent"
+            adb logcat -d -s flutter | tail -50
+
+  infrastructure:
+    name: Compose, scripts and image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate production Compose file
+        env:
+          ENV_FILE: .env.production.example
+        run: >
+          docker compose -f docker-compose.production.yml
+          --env-file .env.production.example config -q
+
+      - name: Shell script syntax
+        run: |
+          for script in infrastructure/scripts/*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Build backend image
+        run: docker build -f infrastructure/docker/backend.Dockerfile -t oryqent-backend:ci .
+
+      - name: Build web image
+        run: docker build -f apps/web/Dockerfile -t oryqent-web:ci .
