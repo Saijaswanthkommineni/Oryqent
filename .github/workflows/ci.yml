@@ -96,7 +96,6 @@ jobs:
       POSTGRES_PORT: "5432"
       DJANGO_SECRET_KEY: ci-only-not-a-real-secret-0123456789abcdefghijklmnopqrstuvwxyz
       DJANGO_DEBUG: "false"
-      EVIDENCE_DIR: ${{ runner.temp }}/backend-postgres-evidence
     steps:
       - uses: actions/checkout@v4
 
@@ -107,7 +106,9 @@ jobs:
           cache-dependency-path: backend/requirements-dev.txt
 
       - name: Create evidence directory
-        run: mkdir -p "$EVIDENCE_DIR"
+        run: |
+          echo "EVIDENCE_DIR=$RUNNER_TEMP/backend-postgres-evidence" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/backend-postgres-evidence"
 
       - name: PostgreSQL readiness
         run: |
